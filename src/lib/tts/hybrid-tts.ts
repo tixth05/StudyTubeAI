@@ -1,128 +1,39 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
 /**
- * Hybrid TTS System
- * Primary: ElevenLabs API (free tier)
- * Fallback: Browser Web Speech API
+ * TTS System using Microsoft Edge-TTS (msedge-tts)
+ * No API keys required.
  */
 
-interface TTSOptions {
-    text: string;
-    voice?: string;
-}
+const VOICE = 'en-US-GuyNeural';
 
 /**
- * Generate speech using ElevenLabs API (Primary)
+ * Generate speech using Edge-TTS
  */
-async function generateWithElevenLabs(text: string): Promise<string | null> {
-    try {
-        const apiKey = process.env.ELEVENLABS_API_KEY;
-
-        if (!apiKey) {
-            console.log('ElevenLabs API key not found, using fallback');
-            return null;
-        }
-
-        const voiceId = 'EXAVITQu4vr4xnSDxMaL'; // Default voice (Rachel)
-
-        const response = await fetch(
-            `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
-            {
-                method: 'POST',
-                headers: {
-                    'Accept': 'audio/mpeg',
-                    'Content-Type': 'application/json',
-                    'xi-api-key': apiKey
-                },
-                body: JSON.stringify({
-                    text,
-                    model_id: 'eleven_flash_v2_5',
-                    voice_settings: {
-                        stability: 0.5,
-                        similarity_boost: 0.5
-                    }
-                })
-            }
-        );
-
-        if (!response.ok) {
-            if (response.status === 401) {
-                console.log('ElevenLabs API key invalid, using fallback');
-            } else if (response.status === 429) {
-                console.log('ElevenLabs rate limit exceeded, using fallback');
-            } else {
-                console.log(`ElevenLabs API error: ${response.status}, using fallback`);
-            }
-            return null;
-        }
-
-        // Save audio to temp file
-        const tempDir = path.join(os.tmpdir(), 'studytube-ai');
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-        }
-
-        const outputPath = path.join(tempDir, `narration-${Date.now()}.mp3`);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-
-        fs.writeFileSync(outputPath, buffer);
-
-        console.log('✅ Generated speech with ElevenLabs');
-        return outputPath;
-
-    } catch (error) {
-        console.error('ElevenLabs error:', error);
-        return null;
-    }
-}
-
-/**
- * Generate speech using Web Speech API (Fallback)
- * This creates a silent placeholder that will be replaced by client-side TTS
- */
-async function generateWithWebSpeech(text: string): Promise<string> {
-    console.log('⚠️ Using Web Speech API fallback (client-side narration)');
-
-    // Create temp directory if it doesn't exist
+export async function generateSpeech(text: string): Promise<string> {
     const tempDir = path.join(os.tmpdir(), 'studytube-ai');
     if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    const outputPath = path.join(tempDir, `narration-fallback-${Date.now()}.mp3`);
+    const outputPath = path.join(tempDir, `narration-${Date.now()}.mp3`);
 
-    // Create a metadata file that signals client-side TTS should be used
-    const metadata = {
-        type: 'web-speech-fallback',
-        text: text,
-        timestamp: Date.now()
-    };
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
 
-    // Write metadata as JSON (will be used by frontend)
-    fs.writeFileSync(outputPath.replace('.mp3', '.json'), JSON.stringify(metadata));
+    const { audioFilePath } = await tts.toFile(tempDir, text);
 
-    // Create empty MP3 placeholder
-    fs.writeFileSync(outputPath, '');
-
-    return outputPath;
-}
-
-/**
- * Main TTS function with hybrid strategy
- */
-export async function generateSpeech(text: string): Promise<string> {
-    // Try ElevenLabs first
-    const elevenLabsPath = await generateWithElevenLabs(text);
-
-    if (elevenLabsPath) {
-        return elevenLabsPath;
+    // Rename auto-generated filename to our expected path
+    if (audioFilePath !== outputPath) {
+        fs.renameSync(audioFilePath, outputPath);
     }
 
-    // Fallback to Web Speech API
-    return await generateWithWebSpeech(text);
+    tts.close();
+    console.log('✅ Generated speech with Edge-TTS');
+    return outputPath;
 }
 
 /**
@@ -143,20 +54,7 @@ export function cleanupAudioFile(filePath: string): void {
         if (fs.existsSync(filePath)) {
             fs.unlinkSync(filePath);
         }
-
-        // Also cleanup metadata file if exists
-        const metadataPath = filePath.replace('.mp3', '.json');
-        if (fs.existsSync(metadataPath)) {
-            fs.unlinkSync(metadataPath);
-        }
     } catch (error) {
         console.error('Error cleaning up audio file:', error);
     }
-}
-
-/**
- * Check if ElevenLabs is available
- */
-export function isElevenLabsAvailable(): boolean {
-    return !!process.env.ELEVENLABS_API_KEY;
 }

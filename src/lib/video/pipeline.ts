@@ -52,18 +52,76 @@ async function getAudioDuration(audioPath: string): Promise<number> {
 // ---------------------------------------------------------------------------
 // Unsplash image fetch + download
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Domain-aware Unsplash search query builder
+// ---------------------------------------------------------------------------
+function buildSearchQuery(keywords: string[]): string {
+    const text = keywords.join(' ').toLowerCase();
+
+    // Technology / cloud computing
+    if (
+        text.includes('cloud computing') ||
+        text.includes('cloud') && (text.includes('comput') || text.includes('server') || text.includes('deploy') || text.includes('platform')) ||
+        text.includes('iaas') || text.includes('paas') || text.includes('saas') ||
+        text.includes('infrastructure') || text.includes('virtualization')
+    ) {
+        return keywords.join(' ') + ' data center servers cloud infrastructure networking technology';
+    }
+
+    // Programming / software
+    if (
+        text.includes('algorithm') || text.includes('programming') ||
+        text.includes('software') || text.includes('database') ||
+        text.includes('coding') || text.includes('api') ||
+        text.includes('machine learning') || text.includes('artificial intelligence')
+    ) {
+        return keywords.join(' ') + ' technology code software digital';
+    }
+
+    // Science / chemistry / biology
+    if (
+        text.includes('cell') || text.includes('molecule') ||
+        text.includes('chemistry') || text.includes('biology') ||
+        text.includes('physics') || text.includes('atom')
+    ) {
+        return keywords.join(' ') + ' science laboratory research';
+    }
+
+    // Weather (explicit)
+    if (
+        text.includes('weather') || text.includes('rain') ||
+        text.includes('storm') || text.includes('climate')
+    ) {
+        return keywords.join(' ') + ' sky weather clouds nature';
+    }
+
+    // Math / finance
+    if (
+        text.includes('math') || text.includes('calculus') ||
+        text.includes('statistics') || text.includes('finance') ||
+        text.includes('economics')
+    ) {
+        return keywords.join(' ') + ' education mathematics charts';
+    }
+
+    return keywords.join(' ');
+}
+
 async function fetchUnsplashImage(
     keywords: string[],
     sceneIdx: number,
     tmpDir: string,
 ): Promise<string | null> {
     const accessKey = process.env.UNSPLASH_ACCESS_KEY;
+    console.log(`[Unsplash] Scene ${sceneIdx + 1}: accessKey=${accessKey ? 'SET(' + accessKey.substring(0, 6) + '...)' : 'MISSING'}, keywords=${JSON.stringify(keywords)}`);
     if (!accessKey || accessKey === 'your_unsplash_access_key_here') {
         console.log(`[Unsplash] No API key — gradient fallback for scene ${sceneIdx + 1}`);
         return null;
     }
 
-    const query = keywords.slice(0, 3).join(' ') || `scene ${sceneIdx + 1}`;
+    const rawQuery = keywords.length > 0 ? buildSearchQuery(keywords) : `scene ${sceneIdx + 1}`;
+    const query = rawQuery.substring(0, 200); // Unsplash query length limit
+    console.log(`[Unsplash] Scene ${sceneIdx + 1}: query="${query}"`);
 
     try {
         const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1&orientation=landscape`;
@@ -71,8 +129,11 @@ async function fetchUnsplashImage(
             headers: { Authorization: `Client-ID ${accessKey}` },
         });
 
+        console.log(`[Unsplash] Scene ${sceneIdx + 1}: HTTP ${res.status}`);
+
         if (!res.ok) {
-            console.warn(`[Unsplash] API error ${res.status} for query: "${query}"`);
+            const errBody = await res.text();
+            console.warn(`[Unsplash] API error ${res.status} for query: "${query}" — ${errBody}`);
             return null;
         }
 
@@ -83,13 +144,17 @@ async function fetchUnsplashImage(
             return null;
         }
 
+        console.log(`[Unsplash] Scene ${sceneIdx + 1}: downloading ${imageUrl.substring(0, 80)}...`);
         const imgRes = await fetch(imageUrl);
-        if (!imgRes.ok) return null;
+        if (!imgRes.ok) {
+            console.warn(`[Unsplash] Image download failed: HTTP ${imgRes.status}`);
+            return null;
+        }
 
         const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
         const imgPath = path.join(tmpDir, `bg-${sceneIdx}.jpg`);
         fs.writeFileSync(imgPath, imgBuffer);
-        console.log(`[Unsplash] Scene ${sceneIdx + 1}: "${query}" → ${imgPath}`);
+        console.log(`[Unsplash] Scene ${sceneIdx + 1}: "${query.substring(0, 60)}" → ${imgPath} (${imgBuffer.length} bytes)`);
         return imgPath;
 
     } catch (err: any) {
@@ -158,11 +223,11 @@ function wrapTextForSvg(text: string, maxChars = 52): string[] {
 
 /**
  * Build an SVG overlay containing:
- *  - Bottom fade gradient (for text legibility)
- *  - Semi-transparent subtitle box + white text lines
+ *  - Small semi-transparent subtitle box + white text lines
  *  - Scene badge (top-left)
  *
- * No fonts embedded — uses generic sans-serif (available everywhere).
+ * Does NOT cover the full background — only compact boxes so Unsplash images
+ * remain clearly visible.
  */
 function buildSvgOverlay(
     subtitleText: string,
@@ -188,30 +253,20 @@ function buildSvgOverlay(
     const sceneLabel = escapeXml(`Scene ${sceneIdx + 1} of ${sceneCount}`);
 
     return `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <linearGradient id="bottomFade" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="black" stop-opacity="0"/>
-      <stop offset="100%" stop-color="black" stop-opacity="0.72"/>
-    </linearGradient>
-  </defs>
-
-  <!-- Dark fade at bottom for contrast -->
-  <rect x="0" y="${Math.round(h * 0.52)}" width="${w}" height="${Math.round(h * 0.48)}" fill="url(#bottomFade)"/>
-
-  <!-- Subtitle background box -->
-  <rect x="60" y="${boxY}" width="${w - 120}" height="${boxH}" rx="14" fill="black" fill-opacity="0.62"/>
+  <!-- Subtitle background box (compact, does NOT cover full image) -->
+  <rect x="60" y="${boxY}" width="${w - 120}" height="${boxH}" rx="14" fill="black" fill-opacity="0.5"/>
 
   <!-- Subtitle text lines -->
   ${textLines}
 
   <!-- Scene badge top-left -->
-  <rect x="40" y="28" width="200" height="48" rx="10" fill="black" fill-opacity="0.55"/>
+  <rect x="40" y="28" width="200" height="48" rx="10" fill="black" fill-opacity="0.5"/>
   <text x="140" y="60" font-family="Arial,Helvetica,sans-serif" font-size="24" fill="white" fill-opacity="0.9" text-anchor="middle">${sceneLabel}</text>
 </svg>`;
 }
 
 // ---------------------------------------------------------------------------
-// Sharp: render final scene image (background + blur + overlay + text)
+// Sharp: render final scene image (background + overlay + text)
 // FFmpeg never touches text — Sharp handles everything visual.
 // ---------------------------------------------------------------------------
 async function renderSceneImage(
@@ -226,33 +281,35 @@ async function renderSceneImage(
     const svgOverlay = buildSvgOverlay(subtitleText, sceneIdx, sceneCount, w, h);
     const svgBuf = Buffer.from(svgOverlay, 'utf-8');
 
-    if (rawImagePath) {
-        // Unsplash photo: scale → blur → dark overlay → SVG text
-        await sharp(rawImagePath)
-            .resize(w, h, { fit: 'cover', position: 'centre' })
-            .blur(5)
-            .composite([
-                // Dark semi-transparent veil
-                {
-                    input: {
-                        create: {
-                            width: w,
-                            height: h,
-                            channels: 4,
-                            background: { r: 0, g: 0, b: 0, alpha: 120 }, // ~47% opacity
-                        },
-                    },
-                    blend: 'over',
-                },
-                // SVG overlay (fade gradient + subtitle box + text + badge)
-                { input: svgBuf, blend: 'over' },
-            ])
-            .jpeg({ quality: 88 })
-            .toFile(outputPath);
-    } else {
-        // Gradient fallback: render SVG gradient → composite text overlay
-        const colors = SCENE_GRADIENTS[sceneIdx % SCENE_GRADIENTS.length];
-        const gradientSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
+    // Check if the Unsplash image actually exists and has content
+    const hasValidImage = rawImagePath
+        && fs.existsSync(rawImagePath)
+        && fs.statSync(rawImagePath).size > 1000;
+
+    console.log(`[Sharp] Scene ${sceneIdx + 1}: rawImagePath=${rawImagePath}, hasValidImage=${hasValidImage}`);
+
+    if (hasValidImage) {
+        try {
+            // Unsplash photo: resize to cover → SVG text overlay only (no dark veil)
+            await sharp(rawImagePath!)
+                .resize(w, h, { fit: 'cover', position: 'centre' })
+                .composite([
+                    // SVG overlay (compact subtitle box + text + badge — no full-screen darkening)
+                    { input: svgBuf, blend: 'over' },
+                ])
+                .jpeg({ quality: 90 })
+                .toFile(outputPath);
+
+            console.log(`[Sharp] Scene ${sceneIdx + 1}: ✅ Rendered with Unsplash image → ${outputPath}`);
+            return;
+        } catch (sharpErr: any) {
+            console.warn(`[Sharp] Scene ${sceneIdx + 1}: ⚠️ Failed to render Unsplash image, falling back to gradient:`, sharpErr.message);
+        }
+    }
+
+    // Gradient fallback: render SVG gradient → composite text overlay
+    const colors = SCENE_GRADIENTS[sceneIdx % SCENE_GRADIENTS.length];
+    const gradientSvg = `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="${colors[0]}"/>
@@ -262,13 +319,12 @@ async function renderSceneImage(
   <rect width="${w}" height="${h}" fill="url(#bg)"/>
 </svg>`;
 
-        await sharp(Buffer.from(gradientSvg, 'utf-8'))
-            .composite([{ input: svgBuf, blend: 'over' }])
-            .jpeg({ quality: 88 })
-            .toFile(outputPath);
-    }
+    await sharp(Buffer.from(gradientSvg, 'utf-8'))
+        .composite([{ input: svgBuf, blend: 'over' }])
+        .jpeg({ quality: 88 })
+        .toFile(outputPath);
 
-    console.log(`[Sharp] Scene ${sceneIdx + 1} rendered → ${outputPath}`);
+    console.log(`[Sharp] Scene ${sceneIdx + 1}: Rendered with gradient fallback → ${outputPath}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +406,9 @@ async function concatSegmentsWithAudio(
         '-safe', '0',
         '-i', concatListPath,
         '-i', audioPath,
-        '-c:v', 'copy',
+        '-c:v', 'libx264',
+        '-preset', 'fast',
+        '-pix_fmt', 'yuv420p',
         '-c:a', 'aac',
         '-shortest',
         '-movflags', '+faststart',
@@ -372,22 +430,28 @@ async function createVideo(
     const sceneCount = Math.min(scenes.length, 5);
     if (sceneCount === 0) throw new Error('No scenes provided');
 
-    // Subtitle sentences from TTS script
+    // ---- Subtitle sync: use sentences from the ACTUAL TTS script ----
     const sentences = splitScriptSentences(script);
     const subtitles = assignSentencesToScenes(sentences, sceneCount);
 
-    // Duration plan
-    const frames_per_scene = Math.ceil((audioDuration / sceneCount) * 25);
-    const sceneDur = (audioDuration / sceneCount) + 2; // padded
-    const expectedTotal = sceneDur * sceneCount;
+    // ---- Dynamic scene timing based on word count ----
+    const wordCounts = subtitles.map(s => s.split(/\s+/).length);
+    const totalWords = wordCounts.reduce((a, b) => a + b, 0) || 1;
+    // Distribute audio duration proportionally to word count per scene
+    const sceneDurations = wordCounts.map(wc => {
+        const proportion = wc / totalWords;
+        return Math.max(proportion * audioDuration, 2); // minimum 2s per scene
+    });
+    // Normalize so total matches audioDuration (+ small pad for safety)
+    const rawTotal = sceneDurations.reduce((a, b) => a + b, 0);
+    const normalizedDurations = sceneDurations.map(d => (d / rawTotal) * audioDuration + 0.5);
 
-    console.log('[Pipeline] Duration plan:');
-    console.log(`  audioDuration      = ${audioDuration.toFixed(3)}s`);
-    console.log(`  sceneCount         = ${sceneCount}`);
-    console.log(`  frames_per_scene   = ${frames_per_scene} @ 25fps`);
-    console.log(`  sceneDur (padded)  = ${sceneDur.toFixed(3)}s`);
-    console.log(`  total segments     = ${expectedTotal.toFixed(3)}s (trimmed to audio by -shortest)`);
-    console.log(`  Script sentences   = ${sentences.length} across ${sceneCount} scenes`);
+    console.log('[Pipeline] Duration plan (dynamic):');
+    console.log(`  audioDuration   = ${audioDuration.toFixed(3)}s`);
+    console.log(`  sceneCount      = ${sceneCount}`);
+    console.log(`  wordCounts      = [${wordCounts.join(', ')}]  (total: ${totalWords})`);
+    console.log(`  sceneDurations  = [${normalizedDurations.map(d => d.toFixed(2)).join(', ')}]s`);
+    console.log(`  Sentences       = ${sentences.length} across ${sceneCount} scenes`);
 
     // 1. Fetch Unsplash images in parallel
     const rawImagePaths: (string | null)[] = await Promise.all(
@@ -400,15 +464,18 @@ async function createVideo(
     const segmentPaths: string[] = [];
     for (let i = 0; i < sceneCount; i++) {
         const renderedPath = path.join(tmpDir, `rendered-${i}.jpg`);
+        // Subtitles come from the TTS script sentences, NOT scene summaries
         await renderSceneImage(
             rawImagePaths[i],
-            subtitles[i] || scenes[i].text,
+            subtitles[i],
             i, sceneCount,
             renderedPath,
         );
 
+        const sceneDur = normalizedDurations[i];
+        const framesForScene = Math.ceil(sceneDur * 25);
         const segPath = path.join(tmpDir, `segment-${i}.mp4`);
-        await generateSceneSegment(renderedPath, i, frames_per_scene, sceneDur, segPath);
+        await generateSceneSegment(renderedPath, i, framesForScene, sceneDur, segPath);
         segmentPaths.push(segPath);
     }
 

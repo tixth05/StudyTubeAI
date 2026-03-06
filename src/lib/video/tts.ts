@@ -1,40 +1,23 @@
 import * as fs from 'fs';
+import * as path from 'path';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 
-const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY!;
-// Default voice: Rachel (professional female voice)
-const VOICE_ID = 'EXAVITQu4vr4xnSDxMaL';
+const VOICE = 'en-US-GuyNeural';
 
-export async function generateAudio(script: string, outputPath: string): Promise<void> {
-    if (!ELEVENLABS_API_KEY) {
-        throw new Error('ELEVENLABS_API_KEY is not configured');
+export async function generateAudio(text: string, outputPath: string): Promise<void> {
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(VOICE, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3);
+
+    // toFile writes to a directory with an auto-generated filename,
+    // so we write to the parent dir then rename to the desired outputPath.
+    const dir = path.dirname(outputPath);
+    const { audioFilePath } = await tts.toFile(dir, text);
+
+    // Rename the auto-generated file to the expected output path
+    if (audioFilePath !== outputPath) {
+        fs.renameSync(audioFilePath, outputPath);
     }
 
-    const response = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
-        {
-            method: 'POST',
-            headers: {
-                'xi-api-key': ELEVENLABS_API_KEY,
-                'Content-Type': 'application/json',
-                'Accept': 'audio/mpeg',
-            },
-            body: JSON.stringify({
-                text: script.substring(0, 2500), // ElevenLabs free tier limit
-                model_id: 'eleven_flash_v2_5',
-                voice_settings: {
-                    stability: 0.5,
-                    similarity_boost: 0.75,
-                },
-            }),
-        }
-    );
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`ElevenLabs API error (${response.status}): ${errorText}`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    fs.writeFileSync(outputPath, Buffer.from(arrayBuffer));
+    tts.close();
     console.log(`[TTS] Audio saved to ${outputPath}`);
 }
